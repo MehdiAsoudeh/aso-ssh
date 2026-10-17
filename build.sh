@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="ASO VPN"
-VERSION="${ASO_VPN_VERSION:-3.2}"
+VERSION="${ASO_VPN_VERSION:-1.1.0}"
 MIN_MACOS="12.0"
 SDK="$(xcrun --show-sdk-path)"
 OUT_DIR="${ROOT}/dist"
@@ -13,21 +13,34 @@ need clang
 need lipo
 need xcrun
 bash -n "${ROOT}/vpn.sh"
+
+echo "==> Running session policy tests..."
+clang -fobjc-arc -framework Foundation \
+  -I"${ROOT}" \
+  "${ROOT}/VPNSessionPolicy.m" \
+  "${ROOT}/tests/test_session_policy.m" \
+  -o "${ROOT}/.test-session-policy"
+"${ROOT}/.test-session-policy"
+rm -f "${ROOT}/.test-session-policy"
+
 rm -rf "${OUT_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
+SRCS=("${ROOT}/VPNApp.m" "${ROOT}/VPNSessionPolicy.m")
 echo "==> Compiling arm64..."
 clang -O2 -fobjc-arc \
   -target "arm64-apple-macos${MIN_MACOS}" \
   -isysroot "${SDK}" \
-  -framework Cocoa \
-  "${ROOT}/VPNApp.m" \
+  -framework Cocoa -framework Foundation \
+  -I"${ROOT}" \
+  "${SRCS[@]}" \
   -o "${ROOT}/.build-arm64"
 echo "==> Compiling x86_64..."
 clang -O2 -fobjc-arc \
   -target "x86_64-apple-macos${MIN_MACOS}" \
   -isysroot "${SDK}" \
-  -framework Cocoa \
-  "${ROOT}/VPNApp.m" \
+  -framework Cocoa -framework Foundation \
+  -I"${ROOT}" \
+  "${SRCS[@]}" \
   -o "${ROOT}/.build-x86_64"
 echo "==> Creating universal binary..."
 lipo -create "${ROOT}/.build-arm64" "${ROOT}/.build-x86_64" -output "${APP_DIR}/Contents/MacOS/${APP_NAME}"
@@ -63,5 +76,4 @@ echo "Run:"
 echo "  open \"${APP_DIR}\""
 echo
 echo "Config is saved to:"
-echo "  ~/Library/Application Support/ASO VPN/vpn.conf"
-echo "(empty until you press Save Config)"
+echo "  ~/Library/Application Support/ASO VPN/profiles.json"

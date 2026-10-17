@@ -27,14 +27,16 @@ Universal binary: `arm64` + `x86_64`.
 ## Usage
 
 1. Open **ASO VPN**
-2. Click **Config** → enter Host / User / Password / Port → **Save Config**
-3. Click **Connect** and allow admin access once
+2. Click **Add** → enter Name / Host / User / Password / Port → **Save Config**
+3. Select a config in the list, then **Connect** (allow admin access once)
 4. Traffic is tunneled system-wide (TCP + DNS)
 
-Config file (created only after Save):
+You can keep multiple configs; the selected one is used for Connect.
+Configs survive app updates (stored outside the `.app`).
 
 ```text
-~/Library/Application Support/ASO VPN/vpn.conf
+~/Library/Application Support/ASO VPN/profiles.json
+~/Library/Application Support/ASO VPN/vpn.conf   # active profile (for vpn.sh)
 ```
 
 ## Project layout

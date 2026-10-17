@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <unistd.h>
+#import "VPNSessionPolicy.h"
 
 @interface FlippedView : NSView
 @end
@@ -7,62 +8,95 @@
 - (BOOL)isFlipped { return YES; }
 @end
 
-@interface VPNConfig : NSObject
-@property (copy) NSString *host, *user, *password, *port, *key, *extraOpts;
-+ (instancetype)loadFromURL:(NSURL *)url;
-- (BOOL)saveToURL:(NSURL *)url error:(NSError **)error;
+@interface VPNProfile : NSObject
+@property (copy) NSString *profileId, *name, *host, *user, *password, *port, *key;
+- (NSString *)displayTitle;
+- (NSString *)subtitle;
+- (NSDictionary *)toDict;
+- (BOOL)writeShellConfToURL:(NSURL *)url error:(NSError **)error;
++ (instancetype)fromDict:(NSDictionary *)d;
++ (instancetype)profileWithName:(NSString *)name host:(NSString *)host user:(NSString *)user password:(NSString *)password port:(NSString *)port key:(NSString *)key;
 @end
 
-@implementation VPNConfig
-+ (instancetype)loadFromURL:(NSURL *)url {
-    VPNConfig *cfg = [VPNConfig new];
-    cfg.host = cfg.user = cfg.password = cfg.port = cfg.key = cfg.extraOpts = @"";
-    NSString *text = [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil];
-    if (!text) return cfg;
-    for (NSString *raw in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
-        NSString *line = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        if (!line.length || [line hasPrefix:@"#"]) continue;
-        NSRange eq = [line rangeOfString:@"="];
-        if (eq.location == NSNotFound) continue;
-        NSString *key = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        NSString *value = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        if (([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) || ([value hasPrefix:@"'"] && [value hasSuffix:@"'"]))
-            value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
-        if ([key isEqualToString:@"SSH_HOST"]) cfg.host = value;
-        else if ([key isEqualToString:@"SSH_USER"]) cfg.user = value;
-        else if ([key isEqualToString:@"SSH_PASS"]) cfg.password = value;
-        else if ([key isEqualToString:@"SSH_PORT"]) cfg.port = value;
-        else if ([key isEqualToString:@"SSH_KEY"]) cfg.key = value;
-        else if ([key isEqualToString:@"SSH_EXTRA_OPTS"]) cfg.extraOpts = value;
-    }
-    return cfg;
+@implementation VPNProfile
++ (instancetype)profileWithName:(NSString *)name host:(NSString *)host user:(NSString *)user password:(NSString *)password port:(NSString *)port key:(NSString *)key {
+    VPNProfile *p = [VPNProfile new];
+    p.profileId = [[NSUUID UUID] UUIDString];
+    p.name = name ?: @"";
+    p.host = host ?: @"";
+    p.user = user ?: @"";
+    p.password = password ?: @"";
+    p.port = port ?: @"";
+    p.key = key ?: @"";
+    return p;
 }
-- (BOOL)saveToURL:(NSURL *)url error:(NSError **)error {
++ (instancetype)fromDict:(NSDictionary *)d {
+    if (![d isKindOfClass:[NSDictionary class]]) return nil;
+    VPNProfile *p = [VPNProfile new];
+    p.profileId = [d[@"id"] isKindOfClass:[NSString class]] ? d[@"id"] : [[NSUUID UUID] UUIDString];
+    p.name = [d[@"name"] isKindOfClass:[NSString class]] ? d[@"name"] : @"";
+    p.host = [d[@"host"] isKindOfClass:[NSString class]] ? d[@"host"] : @"";
+    p.user = [d[@"user"] isKindOfClass:[NSString class]] ? d[@"user"] : @"";
+    p.password = [d[@"password"] isKindOfClass:[NSString class]] ? d[@"password"] : @"";
+    p.port = [d[@"port"] isKindOfClass:[NSString class]] ? d[@"port"] : @"";
+    p.key = [d[@"key"] isKindOfClass:[NSString class]] ? d[@"key"] : @"";
+    return p;
+}
+- (NSDictionary *)toDict {
+    return @{
+        @"id": self.profileId ?: @"",
+        @"name": self.name ?: @"",
+        @"host": self.host ?: @"",
+        @"user": self.user ?: @"",
+        @"password": self.password ?: @"",
+        @"port": self.port ?: @"",
+        @"key": self.key ?: @""
+    };
+}
+- (NSString *)displayTitle {
+    if (self.name.length) return self.name;
+    if (self.host.length) return self.host;
+    return @"Untitled";
+}
+- (NSString *)subtitle {
+    NSString *port = self.port.length ? self.port : @"22";
+    if (!self.user.length && !self.host.length) return @"Not configured";
+    return [NSString stringWithFormat:@"%@@%@:%@", self.user.length ? self.user : @"?", self.host.length ? self.host : @"?", port];
+}
+- (BOOL)writeShellConfToURL:(NSURL *)url error:(NSError **)error {
     NSString *(^q)(NSString *) = ^(NSString *s) {
         return [NSString stringWithFormat:@"'%@'", [s stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"] ?: @""];
     };
-    NSString *body = [NSString stringWithFormat:@"SSH_HOST=%@\nSSH_USER=%@\nSSH_PASS=%@\nSSH_PORT=%@\nSSH_KEY=%@\nSSH_EXTRA_OPTS=%@\n",
-                      q(self.host), q(self.user), q(self.password), q(self.port), q(self.key), q(self.extraOpts ?: @"")];
+    NSString *body = [NSString stringWithFormat:@"SSH_HOST=%@\nSSH_USER=%@\nSSH_PASS=%@\nSSH_PORT=%@\nSSH_KEY=%@\nSSH_EXTRA_OPTS=''\n",
+                      q(self.host), q(self.user), q(self.password), q(self.port), q(self.key)];
     return [body writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:error];
 }
 @end
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate>
 @property (strong) NSWindow *window, *configWindow;
 @property (strong) NSView *statusDot;
-@property (strong) NSTextField *statusLabel, *detailLabel, *ipLabel, *busyLabel, *footerLabel, *configStatusLabel, *modeLabel;
-@property (strong) NSTextField *hostField, *userField, *portField, *keyField;
+@property (strong) NSTextField *statusLabel, *detailLabel, *ipLabel, *busyLabel, *footerLabel, *versionLabel, *configStatusLabel, *modeLabel, *profilesHeader, *emptyListLabel;
+@property (strong) NSTextField *nameField, *hostField, *userField, *portField, *keyField;
 @property (strong) NSSecureTextField *passField;
-@property (strong) NSButton *actionButton, *configButton, *saveButton, *resetPermButton, *cancelButton;
+@property (strong) NSButton *actionButton, *addButton, *editButton, *deleteButton, *saveButton, *resetPermButton, *cancelButton, *themeButton;
+@property (strong) NSTableView *profilesTable;
+@property (strong) NSScrollView *profilesScroll, *configScrollView;
+@property (strong) NSTextField *configTitleLabel;
 @property (strong) NSTimer *pollTimer, *opTimeout;
 @property (strong) NSTask *activeTask;
-@property (strong) NSScrollView *configScrollView;
-@property (assign) BOOL isBusy, isOn, hasAuth, cancelRequested;
+@property (strong) NSMutableArray<VPNProfile *> *profiles;
+@property (copy) NSString *activeProfileId;
+@property (copy) NSString *editingProfileId;
+@property (strong) VPNSessionPolicy *session;
+@property (assign) BOOL isBusy, isOn, hasAuth, cancelRequested, autoReconnectPending, suppressSelectionHandler, darkTheme;
 @end
 
 @implementation AppDelegate
 
-static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgBottomH = 100, kFieldRowH = 62, kFieldH = 32;
+static const CGFloat kMainW = 420, kMainH = 520, kCfgW = 420, kCfgH = 520, kCfgBottomH = 100, kFieldRowH = 62, kFieldH = 32;
+static const CGFloat kProfileRowH = 52; // ~3 visible rows in the list
+static NSString * const kThemeDarkKey = @"ASOVPNDarkTheme";
 
 - (NSURL *)projectDir {
     return [[[[[NSBundle mainBundle] bundleURL] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent] URLByDeletingLastPathComponent];
@@ -76,6 +110,7 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     return (b && [[NSFileManager defaultManager] fileExistsAtPath:b.path]) ? b : [[self projectDir] URLByAppendingPathComponent:@"vpn.sh"];
 }
 - (NSURL *)configURL { return [[self supportDir] URLByAppendingPathComponent:@"vpn.conf"]; }
+- (NSURL *)profilesStoreURL { return [[self supportDir] URLByAppendingPathComponent:@"profiles.json"]; }
 - (void)ensureSupportFiles {
     [[NSFileManager defaultManager] createDirectoryAtURL:[self supportDir] withIntermediateDirectories:YES attributes:nil error:nil];
 }
@@ -84,12 +119,199 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     [[NSFileManager defaultManager] removeItemAtPath:session error:nil];
 }
 
+- (VPNProfile *)profileWithId:(NSString *)pid {
+    if (!pid.length) return nil;
+    for (VPNProfile *p in self.profiles) {
+        if ([p.profileId isEqualToString:pid]) return p;
+    }
+    return nil;
+}
+- (VPNProfile *)activeProfile {
+    VPNProfile *p = [self profileWithId:self.activeProfileId];
+    if (p) return p;
+    return self.profiles.firstObject;
+}
+- (NSInteger)indexOfActiveProfile {
+    VPNProfile *p = [self activeProfile];
+    if (!p) return -1;
+    return (NSInteger)[self.profiles indexOfObject:p];
+}
+
+- (VPNProfile *)legacyProfileFromVpnConf {
+    NSURL *url = [self configURL];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:url.path]) return nil;
+    NSString *text = [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil];
+    if (!text.length) return nil;
+    NSString *host = @"", *user = @"", *password = @"", *port = @"", *key = @"";
+    for (NSString *raw in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSString *line = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (!line.length || [line hasPrefix:@"#"]) continue;
+        NSRange eq = [line rangeOfString:@"="];
+        if (eq.location == NSNotFound) continue;
+        NSString *k = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSString *value = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) || ([value hasPrefix:@"'"] && [value hasSuffix:@"'"]))
+            value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
+        if ([k isEqualToString:@"SSH_HOST"]) host = value;
+        else if ([k isEqualToString:@"SSH_USER"]) user = value;
+        else if ([k isEqualToString:@"SSH_PASS"]) password = value;
+        else if ([k isEqualToString:@"SSH_PORT"]) port = value;
+        else if ([k isEqualToString:@"SSH_KEY"]) key = value;
+    }
+    if (!host.length && !user.length) return nil;
+    NSString *name = host.length ? host : @"Imported";
+    return [VPNProfile profileWithName:name host:host user:user password:password port:port key:key];
+}
+
+- (void)loadProfilesStore {
+    self.profiles = [NSMutableArray array];
+    self.activeProfileId = nil;
+    [self ensureSupportFiles];
+    NSData *data = [NSData dataWithContentsOfURL:[self profilesStoreURL]];
+    if (data.length) {
+        NSDictionary *root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if ([root isKindOfClass:[NSDictionary class]]) {
+            NSArray *arr = root[@"profiles"];
+            if ([arr isKindOfClass:[NSArray class]]) {
+                for (NSDictionary *d in arr) {
+                    VPNProfile *p = [VPNProfile fromDict:d];
+                    if (p) [self.profiles addObject:p];
+                }
+            }
+            if ([root[@"activeId"] isKindOfClass:[NSString class]]) self.activeProfileId = root[@"activeId"];
+        }
+    }
+    if (self.profiles.count == 0) {
+        VPNProfile *legacy = [self legacyProfileFromVpnConf];
+        if (legacy) {
+            [self.profiles addObject:legacy];
+            self.activeProfileId = legacy.profileId;
+            [self saveProfilesStore];
+        }
+    }
+    if (![self profileWithId:self.activeProfileId]) {
+        self.activeProfileId = self.profiles.firstObject.profileId;
+    }
+    [self syncActiveToVpnConf];
+}
+
+- (BOOL)saveProfilesStore {
+    [self ensureSupportFiles];
+    NSMutableArray *arr = [NSMutableArray array];
+    for (VPNProfile *p in self.profiles) [arr addObject:[p toDict]];
+    NSDictionary *root = @{
+        @"activeId": self.activeProfileId ?: @"",
+        @"profiles": arr
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:root options:NSJSONWritingPrettyPrinted error:nil];
+    if (!data) return NO;
+    return [data writeToURL:[self profilesStoreURL] atomically:YES];
+}
+
+- (BOOL)syncActiveToVpnConf {
+    VPNProfile *p = [self activeProfile];
+    if (!p) {
+        [[NSFileManager defaultManager] removeItemAtURL:[self configURL] error:nil];
+        return YES;
+    }
+    [self ensureSupportFiles];
+    return [p writeShellConfToURL:[self configURL] error:nil];
+}
+
+- (void)selectProfileAtIndex:(NSInteger)idx {
+    if (idx < 0 || idx >= (NSInteger)self.profiles.count) return;
+    if (![self.session allowsConfigChangeWhileConnected:self.isOn]) {
+        self.busyLabel.stringValue = @"Disconnect before changing config";
+        self.busyLabel.textColor = NSColor.systemOrangeColor;
+        self.suppressSelectionHandler = YES;
+        NSInteger cur = [self indexOfActiveProfile];
+        if (cur >= 0) [self.profilesTable selectRowIndexes:[NSIndexSet indexSetWithIndex:cur] byExtendingSelection:NO];
+        self.suppressSelectionHandler = NO;
+        return;
+    }
+    VPNProfile *p = self.profiles[idx];
+    BOOL changed = ![p.profileId isEqualToString:self.activeProfileId];
+    self.activeProfileId = p.profileId;
+    [self saveProfilesStore];
+    [self syncActiveToVpnConf];
+    self.suppressSelectionHandler = YES;
+    [self.profilesTable selectRowIndexes:[NSIndexSet indexSetWithIndex:idx] byExtendingSelection:NO];
+    [self.profilesTable reloadData];
+    self.suppressSelectionHandler = NO;
+    [self updateDetailFromActiveProfile];
+    if (changed) {
+        [self invalidateTunnelSession];
+        [self refreshStatus];
+    }
+}
+
+- (void)updateDetailFromActiveProfile {
+    // SSH target line removed from main UI; selection is visible in the list.
+}
+
+- (void)layoutCenteredStatus {
+    NSString *text = self.statusLabel.stringValue ?: @"";
+    NSDictionary *attrs = @{NSFontAttributeName: self.statusLabel.font ?: [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]};
+    CGFloat textW = ceil([text sizeWithAttributes:attrs].width) + 2;
+    CGFloat dotW = 12, gap = 6;
+    CGFloat total = dotW + gap + textW;
+    CGFloat x = floor((kMainW - total) / 2.0);
+    CGFloat y = self.statusLabel.frame.origin.y;
+    self.statusDot.frame = NSMakeRect(x, y + 4, dotW, dotW);
+    self.statusLabel.alignment = NSTextAlignmentLeft;
+    self.statusLabel.frame = NSMakeRect(x + dotW + gap, y, textW, 20);
+}
+
+- (void)reloadProfilesUI {
+    self.suppressSelectionHandler = YES;
+    [self.profilesTable reloadData];
+    NSInteger idx = [self indexOfActiveProfile];
+    if (idx >= 0) {
+        [self.profilesTable selectRowIndexes:[NSIndexSet indexSetWithIndex:idx] byExtendingSelection:NO];
+    } else {
+        [self.profilesTable deselectAll:nil];
+    }
+    self.suppressSelectionHandler = NO;
+    BOOL empty = self.profiles.count == 0;
+    self.emptyListLabel.hidden = !empty;
+    if (empty) {
+        NSRect r = self.profilesScroll.frame;
+        self.emptyListLabel.frame = NSMakeRect(r.origin.x + 12, r.origin.y + (r.size.height - 20) / 2.0, r.size.width - 24, 20);
+    }
+    [self updateProfileButtons];
+    [self updateDetailFromActiveProfile];
+}
+
+- (void)updateProfileButtons {
+    BOOL has = self.profiles.count > 0;
+    BOOL canChange = [self.session allowsConfigChangeWhileConnected:self.isOn];
+    self.addButton.enabled = !self.isBusy && canChange;
+    self.editButton.enabled = has && !self.isBusy && canChange;
+    self.deleteButton.enabled = has && !self.isBusy && canChange;
+    self.profilesTable.enabled = !self.isBusy && canChange;
+}
+
 - (NSTextField *)makeLabel:(NSString *)text size:(CGFloat)size weight:(NSFontWeight)weight color:(NSColor *)color {
     NSTextField *l = [NSTextField labelWithString:text];
     l.font = [NSFont systemFontOfSize:size weight:weight]; l.textColor = color; l.bezeled = NO; l.editable = NO;
     return l;
 }
-- (NSColor *)bgColor { return [NSColor colorWithCalibratedRed:0.11 green:0.12 blue:0.15 alpha:1]; }
+- (NSColor *)bgColor {
+    return self.darkTheme
+        ? [NSColor colorWithCalibratedRed:0.11 green:0.12 blue:0.15 alpha:1]
+        : [NSColor colorWithCalibratedRed:0.95 green:0.95 blue:0.97 alpha:1];
+}
+- (NSColor *)panelColor {
+    return self.darkTheme
+        ? [NSColor colorWithCalibratedWhite:0.16 alpha:1]
+        : [NSColor colorWithCalibratedWhite:1.0 alpha:1];
+}
+- (NSColor *)primaryTextColor {
+    return self.darkTheme ? NSColor.whiteColor : [NSColor colorWithCalibratedWhite:0.12 alpha:1];
+}
+- (NSColor *)secondaryTextColor:(CGFloat)alpha {
+    return [[self primaryTextColor] colorWithAlphaComponent:alpha];
+}
 - (void)styleInputField:(NSTextField *)field {
     field.font = [NSFont systemFontOfSize:14]; field.bezeled = YES; field.bezelStyle = NSTextFieldRoundedBezel;
     field.drawsBackground = YES; field.backgroundColor = [NSColor textBackgroundColor]; field.textColor = [NSColor textColor];
@@ -99,6 +321,54 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     btn.layer.cornerRadius = 10; btn.layer.masksToBounds = YES;
     btn.attributedTitle = [[NSAttributedString alloc] initWithString:btn.title attributes:@{
         NSForegroundColorAttributeName: NSColor.whiteColor, NSFontAttributeName: [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]}];
+}
+- (void)loadThemePreference {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if ([ud objectForKey:kThemeDarkKey] == nil) self.darkTheme = YES;
+    else self.darkTheme = [ud boolForKey:kThemeDarkKey];
+}
+- (void)saveThemePreference {
+    [[NSUserDefaults standardUserDefaults] setBool:self.darkTheme forKey:kThemeDarkKey];
+}
+- (void)themeTapped {
+    self.darkTheme = !self.darkTheme;
+    [self saveThemePreference];
+    [self applyTheme];
+}
+- (void)recolorConfigFormLabels {
+    NSView *form = self.configScrollView.documentView;
+    for (NSView *v in form.subviews) {
+        if (![v isKindOfClass:[NSTextField class]]) continue;
+        NSTextField *tf = (NSTextField *)v;
+        if (tf.editable || [tf isKindOfClass:[NSSecureTextField class]]) continue;
+        tf.textColor = [self secondaryTextColor:0.75];
+    }
+}
+
+- (void)applyTheme {
+    NSAppearance *app = [NSAppearance appearanceNamed:self.darkTheme ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    self.window.appearance = app;
+    self.configWindow.appearance = app;
+    self.window.backgroundColor = [self bgColor];
+    self.configWindow.backgroundColor = [self bgColor];
+    self.themeButton.title = self.darkTheme ? @"☀︎" : @"☾";
+    self.statusLabel.textColor = self.isOn ? NSColor.systemGreenColor : [self secondaryTextColor:0.85];
+    self.ipLabel.textColor = [self secondaryTextColor:0.85];
+    self.profilesHeader.textColor = [self secondaryTextColor:0.7];
+    self.emptyListLabel.textColor = [self secondaryTextColor:0.45];
+    self.modeLabel.textColor = self.hasAuth ? NSColor.systemGreenColor : NSColor.systemOrangeColor;
+    self.footerLabel.textColor = [self secondaryTextColor:0.32];
+    self.versionLabel.textColor = [self secondaryTextColor:0.28];
+    if (self.busyLabel.stringValue.length == 0)
+        self.busyLabel.textColor = [self secondaryTextColor:0.45];
+    self.profilesScroll.backgroundColor = [self panelColor];
+    self.profilesTable.backgroundColor = [self panelColor];
+    self.configScrollView.backgroundColor = [self panelColor];
+    self.configTitleLabel.textColor = [self primaryTextColor];
+    [self recolorConfigFormLabels];
+    [self.profilesTable reloadData];
+    [self layoutCenteredStatus];
+    [self applyUIOn:self.isOn detail:nil];
 }
 
 - (void)refreshPublicIP {
@@ -122,7 +392,12 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
 
 - (void)applicationDidFinishLaunching:(NSNotification *)n {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    [self ensureSupportFiles]; [self buildMainWindow]; [self buildConfigWindow];
+    self.session = [[VPNSessionPolicy alloc] initWithMaxReconnectAttempts:3];
+    [self loadThemePreference];
+    [self loadProfilesStore];
+    [self buildMainWindow]; [self buildConfigWindow];
+    [self applyTheme];
+    [self reloadProfilesUI];
     [self refreshPublicIP];
     [self refreshAuthAndStatus];
     self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 target:self selector:@selector(refreshStatus) userInfo:nil repeats:YES];
@@ -137,64 +412,217 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     self.window.titlebarAppearsTransparent = YES; self.window.backgroundColor = [self bgColor]; self.window.delegate = self;
     NSView *c = [[NSView alloc] initWithFrame:NSMakeRect(0,0,kMainW,kMainH)]; self.window.contentView = c;
 
-    NSTextField *t = [self makeLabel:@"ASO VPN" size:22 weight:NSFontWeightBold color:NSColor.whiteColor];
-    t.frame = NSMakeRect(24,kMainH-52,200,28); [c addSubview:t];
-    NSTextField *sub = [self makeLabel:@"System-wide SSH tunnel" size:12 weight:NSFontWeightRegular color:[NSColor.whiteColor colorWithAlphaComponent:0.55]];
-    sub.frame = NSMakeRect(24,kMainH-74,220,18); [c addSubview:sub];
+    CGFloat side = 16;
 
-    self.configButton = [[NSButton alloc] initWithFrame:NSMakeRect(kMainW-108,kMainH-54,84,28)];
-    self.configButton.title = @"Config"; self.configButton.bezelStyle = NSBezelStyleRounded;
-    self.configButton.target = self; self.configButton.action = @selector(openConfig);
-    [c addSubview:self.configButton];
+    // Bottom stack first so list can sit above Add with a fixed 3-row height.
+    CGFloat vGap = 16;
+    // Busy/error line sits above email/version; keep permission row clear of footer.
+    CGFloat permRowY = 64;
+    CGFloat connectY = permRowY + 26 + vGap;
+    CGFloat addRowY = connectY + 44 + vGap;
+    CGFloat listH = 3 * kProfileRowH;
+    CGFloat listBottom = addRowY + 26 + 12;
+    CGFloat listTop = listBottom + listH;
 
-    self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(24,kMainH-118,14,14)];
-    self.statusDot.wantsLayer = YES; self.statusDot.layer.cornerRadius = 7;
+    // Your IP → Configs gap is 3× the previous ~12px gap → 36px
+    CGFloat ipConfigsGap = 36;
+    CGFloat headerH = 16;
+    CGFloat headerY = listTop + 6;
+    CGFloat ipY = headerY + headerH + ipConfigsGap;
+    CGFloat statusY = ipY + 44; // 2× gap between status and IP (was 22)
+    // 2× top inset above status (~18 → 36); window height already includes this.
+
+    self.themeButton = [[NSButton alloc] initWithFrame:NSMakeRect(kMainW - side - 32, kMainH - 36, 32, 28)];
+    self.themeButton.title = @"☀︎";
+    self.themeButton.bezelStyle = NSBezelStyleRounded;
+    self.themeButton.font = [NSFont systemFontOfSize:16 weight:NSFontWeightMedium];
+    self.themeButton.target = self;
+    self.themeButton.action = @selector(themeTapped);
+    self.themeButton.toolTip = @"Toggle light / dark theme";
+    [c addSubview:self.themeButton];
+
+    self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(0, statusY + 4, 12, 12)];
+    self.statusDot.wantsLayer = YES; self.statusDot.layer.cornerRadius = 6;
     self.statusDot.layer.backgroundColor = NSColor.systemOrangeColor.CGColor; [c addSubview:self.statusDot];
 
-    self.statusLabel = [self makeLabel:@"Checking…" size:18 weight:NSFontWeightSemibold color:NSColor.whiteColor];
-    self.statusLabel.frame = NSMakeRect(48,kMainH-124,kMainW-72,24); [c addSubview:self.statusLabel];
+    self.statusLabel = [self makeLabel:@"Checking…" size:16 weight:NSFontWeightSemibold color:[self primaryTextColor]];
+    self.statusLabel.frame = NSMakeRect(0, statusY, kMainW, 20);
+    [c addSubview:self.statusLabel];
 
-    self.detailLabel = [self makeLabel:@"—" size:12 weight:NSFontWeightRegular color:[NSColor.whiteColor colorWithAlphaComponent:0.5]];
-    self.detailLabel.frame = NSMakeRect(24,kMainH-148,kMainW-48,18); [c addSubview:self.detailLabel];
+    self.detailLabel = [self makeLabel:@"" size:12 weight:NSFontWeightRegular color:[self secondaryTextColor:0.5]];
+    self.detailLabel.hidden = YES;
 
-    self.ipLabel = [self makeLabel:@"Your IP: ..." size:13 weight:NSFontWeightMedium color:[NSColor.whiteColor colorWithAlphaComponent:0.85]];
-    self.ipLabel.frame = NSMakeRect(24,kMainH-172,kMainW-48,18); [c addSubview:self.ipLabel];
+    self.ipLabel = [self makeLabel:@"Your IP: ..." size:12 weight:NSFontWeightMedium color:[self secondaryTextColor:0.85]];
+    self.ipLabel.alignment = NSTextAlignmentCenter;
+    self.ipLabel.frame = NSMakeRect(side, ipY, kMainW - side*2, 16); [c addSubview:self.ipLabel];
+    [self layoutCenteredStatus];
 
-    self.modeLabel = [self makeLabel:@"Permission: checking…" size:11 weight:NSFontWeightRegular color:[NSColor.whiteColor colorWithAlphaComponent:0.45]];
-    self.modeLabel.frame = NSMakeRect(24,kMainH-192,kMainW-48,16); [c addSubview:self.modeLabel];
+    self.profilesHeader = [self makeLabel:@"Configs" size:12 weight:NSFontWeightSemibold color:[self secondaryTextColor:0.7]];
+    self.profilesHeader.frame = NSMakeRect(side, headerY, kMainW - side*2, headerH); [c addSubview:self.profilesHeader];
 
-    self.actionButton = [[NSButton alloc] initWithFrame:NSMakeRect(24,100,kMainW-48,48)];
+    self.profilesScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(side, listBottom, kMainW - side*2, listH)];
+    self.profilesScroll.hasVerticalScroller = YES;
+    self.profilesScroll.borderType = NSBezelBorder;
+    self.profilesScroll.autohidesScrollers = YES;
+    self.profilesScroll.wantsLayer = YES;
+    self.profilesScroll.layer.cornerRadius = 8;
+    self.profilesScroll.backgroundColor = [self panelColor];
+
+    self.profilesTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"profile"];
+    col.width = kMainW - side*2 - 20;
+    [self.profilesTable addTableColumn:col];
+    self.profilesTable.headerView = nil;
+    self.profilesTable.rowHeight = kProfileRowH;
+    self.profilesTable.backgroundColor = [self panelColor];
+    self.profilesTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleRegular;
+    self.profilesTable.allowsEmptySelection = YES;
+    self.profilesTable.allowsMultipleSelection = NO;
+    self.profilesTable.dataSource = self;
+    self.profilesTable.delegate = self;
+    self.profilesTable.target = self;
+    self.profilesTable.doubleAction = @selector(editConfigTapped);
+    self.profilesScroll.documentView = self.profilesTable;
+    [c addSubview:self.profilesScroll];
+
+    self.emptyListLabel = [self makeLabel:@"No config yet" size:14 weight:NSFontWeightMedium color:[self secondaryTextColor:0.45]];
+    self.emptyListLabel.alignment = NSTextAlignmentCenter;
+    NSRect lr = self.profilesScroll.frame;
+    self.emptyListLabel.frame = NSMakeRect(lr.origin.x + 8, lr.origin.y + (lr.size.height - 20) / 2.0, lr.size.width - 16, 20);
+    [c addSubview:self.emptyListLabel];
+    self.emptyListLabel.hidden = YES;
+
+    CGFloat btnGap = 10;
+    CGFloat btnW = (kMainW - side*2 - 2 * btnGap) / 3.0;
+    self.addButton = [[NSButton alloc] initWithFrame:NSMakeRect(side, addRowY, btnW, 26)];
+    self.addButton.title = @"Add"; self.addButton.bezelStyle = NSBezelStyleRounded;
+    self.addButton.target = self; self.addButton.action = @selector(addConfigTapped);
+    [c addSubview:self.addButton];
+
+    self.editButton = [[NSButton alloc] initWithFrame:NSMakeRect(side + btnW + btnGap, addRowY, btnW, 26)];
+    self.editButton.title = @"Edit"; self.editButton.bezelStyle = NSBezelStyleRounded;
+    self.editButton.target = self; self.editButton.action = @selector(editConfigTapped);
+    [c addSubview:self.editButton];
+
+    self.deleteButton = [[NSButton alloc] initWithFrame:NSMakeRect(side + 2 * (btnW + btnGap), addRowY, btnW, 26)];
+    self.deleteButton.title = @"Delete"; self.deleteButton.bezelStyle = NSBezelStyleRounded;
+    self.deleteButton.target = self; self.deleteButton.action = @selector(deleteConfigTapped);
+    [c addSubview:self.deleteButton];
+
+    self.actionButton = [[NSButton alloc] initWithFrame:NSMakeRect(side, connectY, kMainW - side*2, 44)];
     self.actionButton.title = @"Connect"; self.actionButton.target = self; self.actionButton.action = @selector(toggleTapped);
     [self styleActionButton:self.actionButton color:NSColor.systemGreenColor]; [c addSubview:self.actionButton];
 
-    self.cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(24,68,kMainW-48,26)];
+    self.resetPermButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 10, 26)];
+    self.resetPermButton.title = @"Reset";
+    self.resetPermButton.bezelStyle = NSBezelStyleRounded;
+    self.resetPermButton.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    self.resetPermButton.target = self;
+    self.resetPermButton.action = @selector(resetPermissionTapped);
+    [self.resetPermButton sizeToFit];
+    NSSize resetSz = self.resetPermButton.frame.size;
+    CGFloat resetW = MAX(ceil(resetSz.width) + 14, 56);
+    CGFloat resetH = 24;
+    self.resetPermButton.frame = NSMakeRect(kMainW - side - resetW, permRowY, resetW, resetH);
+    [c addSubview:self.resetPermButton];
+
+    self.cancelButton = [[NSButton alloc] initWithFrame:self.resetPermButton.frame];
     self.cancelButton.title = @"Cancel";
     self.cancelButton.bezelStyle = NSBezelStyleRounded;
-    self.cancelButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    self.cancelButton.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     self.cancelButton.target = self;
     self.cancelButton.action = @selector(cancelTapped);
     self.cancelButton.hidden = YES;
+    [self.cancelButton sizeToFit];
+    NSSize cancelSz = self.cancelButton.frame.size;
+    CGFloat cancelW = MAX(ceil(cancelSz.width) + 14, 56);
+    self.cancelButton.frame = NSMakeRect(kMainW - side - cancelW, permRowY, cancelW, resetH);
     [c addSubview:self.cancelButton];
 
-    self.resetPermButton = [[NSButton alloc] initWithFrame:NSMakeRect(24,58,kMainW-48,26)];
-    self.resetPermButton.title = @"Reset Permission";
-    self.resetPermButton.bezelStyle = NSBezelStyleRounded;
-    self.resetPermButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
-    self.resetPermButton.target = self;
-    self.resetPermButton.action = @selector(resetPermissionTapped);
-    [c addSubview:self.resetPermButton];
+    self.modeLabel = [self makeLabel:@"Permission: checking…" size:10 weight:NSFontWeightRegular color:[self secondaryTextColor:0.45]];
+    CGFloat modeRightPad = MAX(resetW, cancelW) + 8;
+    self.modeLabel.frame = NSMakeRect(side, permRowY + 4, kMainW - side*2 - modeRightPad, 16);
+    [c addSubview:self.modeLabel];
 
-    self.footerLabel = [self makeLabel:@"asoodeh.dev@gmail.com" size:9 weight:NSFontWeightRegular color:[NSColor.whiteColor colorWithAlphaComponent:0.32]];
+    // Email & version +20%
+    self.footerLabel = [self makeLabel:@"asoodeh.dev@gmail.com" size:11 weight:NSFontWeightRegular color:[self secondaryTextColor:0.32]];
     self.footerLabel.alignment = NSTextAlignmentCenter;
-    self.footerLabel.frame = NSMakeRect(24,34,kMainW-48,12); [c addSubview:self.footerLabel];
+    self.footerLabel.frame = NSMakeRect(side, 46, kMainW - side*2, 14); [c addSubview:self.footerLabel];
 
-    self.busyLabel = [self makeLabel:@"" size:10 weight:NSFontWeightRegular color:[NSColor.whiteColor colorWithAlphaComponent:0.45]];
+    NSString *ver = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"—";
+    self.versionLabel = [self makeLabel:[NSString stringWithFormat:@"v%@", ver] size:11 weight:NSFontWeightRegular color:[self secondaryTextColor:0.28]];
+    self.versionLabel.alignment = NSTextAlignmentCenter;
+    self.versionLabel.frame = NSMakeRect(side, 30, kMainW - side*2, 14); [c addSubview:self.versionLabel];
+
+    // Status/error line: +10% font (10→11), 3× bottom inset (was ~4 → 12)
+    self.busyLabel = [self makeLabel:@"" size:11 weight:NSFontWeightRegular color:[self secondaryTextColor:0.45]];
     self.busyLabel.alignment = NSTextAlignmentCenter;
-    self.busyLabel.frame = NSMakeRect(24,12,kMainW-48,18); [c addSubview:self.busyLabel];
+    self.busyLabel.frame = NSMakeRect(side, 12, kMainW - side*2, 14); [c addSubview:self.busyLabel];
+}
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    return (NSInteger)self.profiles.count;
+}
+
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    if (row < 0 || row >= (NSInteger)self.profiles.count) return nil;
+    VPNProfile *p = self.profiles[row];
+    NSString *ident = @"ProfileCellRightCheck";
+    NSTableCellView *cell = [tableView makeViewWithIdentifier:ident owner:self];
+    if (!cell) {
+        cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 280, kProfileRowH)];
+        cell.identifier = ident;
+        NSTextField *title = [self makeLabel:@"" size:16 weight:NSFontWeightSemibold color:[self primaryTextColor]];
+        title.tag = 1;
+        [cell addSubview:title];
+        NSTextField *sub = [self makeLabel:@"" size:13 weight:NSFontWeightRegular color:[self secondaryTextColor:0.5]];
+        sub.tag = 2;
+        [cell addSubview:sub];
+        NSTextField *check = [self makeLabel:@"" size:17 weight:NSFontWeightSemibold color:[self primaryTextColor]];
+        check.alignment = NSTextAlignmentCenter;
+        check.tag = 3;
+        [cell addSubview:check];
+    }
+    NSTextField *title = [cell viewWithTag:1];
+    NSTextField *sub = [cell viewWithTag:2];
+    NSTextField *check = [cell viewWithTag:3];
+    CGFloat cellW = MAX(tableView.bounds.size.width, tableColumn.width);
+    if (cellW < 80) cellW = kMainW - 40;
+    CGFloat checkW = 22, checkPad = 6;
+    check.frame = NSMakeRect(cellW - checkW - checkPad, (kProfileRowH - 22) / 2.0, checkW, 22);
+    CGFloat textW = MAX(40, cellW - checkW - checkPad - 16);
+    title.frame = NSMakeRect(10, 26, textW, 20);
+    sub.frame = NSMakeRect(10, 6, textW, 18);
+    BOOL active = [p.profileId isEqualToString:self.activeProfileId];
+    check.stringValue = active ? @"✓" : @"";
+    title.stringValue = p.displayTitle;
+    title.textColor = [self primaryTextColor];
+    check.textColor = [self primaryTextColor];
+    sub.textColor = [self secondaryTextColor:0.5];
+    sub.stringValue = p.subtitle;
+    return cell;
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    if (self.suppressSelectionHandler) return;
+    if (self.isBusy || ![self.session allowsConfigChangeWhileConnected:self.isOn]) {
+        self.suppressSelectionHandler = YES;
+        NSInteger idx = [self indexOfActiveProfile];
+        if (idx >= 0) [self.profilesTable selectRowIndexes:[NSIndexSet indexSetWithIndex:idx] byExtendingSelection:NO];
+        self.suppressSelectionHandler = NO;
+        if (self.isOn && !self.isBusy) {
+            self.busyLabel.stringValue = @"Disconnect before changing config";
+            self.busyLabel.textColor = NSColor.systemOrangeColor;
+        }
+        return;
+    }
+    NSInteger row = self.profilesTable.selectedRow;
+    if (row < 0) return;
+    [self selectProfileAtIndex:row];
 }
 
 - (NSTextField *)addLabeledField:(NSString *)label inView:(FlippedView *)parent y:(CGFloat)y width:(CGFloat)w x:(CGFloat)x secure:(BOOL)secure {
-    NSTextField *cap = [self makeLabel:label size:12 weight:NSFontWeightMedium color:[NSColor.whiteColor colorWithAlphaComponent:0.75]];
+    NSTextField *cap = [self makeLabel:label size:12 weight:NSFontWeightMedium color:[self secondaryTextColor:0.75]];
     cap.frame = NSMakeRect(x,y,w,16); [parent addSubview:cap];
     NSTextField *field = secure ? [[NSSecureTextField alloc] initWithFrame:NSMakeRect(x,y+20,w,kFieldH)] : [[NSTextField alloc] initWithFrame:NSMakeRect(x,y+20,w,kFieldH)];
     [self styleInputField:field]; [parent addSubview:field]; return field;
@@ -205,17 +633,19 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     self.configWindow.title = @"Connection Settings"; self.configWindow.releasedWhenClosed = NO;
     self.configWindow.titlebarAppearsTransparent = YES; self.configWindow.backgroundColor = [self bgColor]; self.configWindow.delegate = self;
     NSView *c = [[NSView alloc] initWithFrame:NSMakeRect(0,0,kCfgW,kCfgH)]; self.configWindow.contentView = c;
-    NSTextField *h = [self makeLabel:@"Connection settings" size:18 weight:NSFontWeightBold color:NSColor.whiteColor];
-    h.frame = NSMakeRect(24,kCfgH-44,kCfgW-48,26); [c addSubview:h];
+    self.configTitleLabel = [self makeLabel:@"Connection settings" size:18 weight:NSFontWeightBold color:[self primaryTextColor]];
+    self.configTitleLabel.frame = NSMakeRect(24,kCfgH-44,kCfgW-48,26); [c addSubview:self.configTitleLabel];
     self.configScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(16,kCfgBottomH,kCfgW-32,kCfgH-80-kCfgBottomH)];
     self.configScrollView.hasVerticalScroller = YES; self.configScrollView.autohidesScrollers = YES; self.configScrollView.borderType = NSBezelBorder;
-    self.configScrollView.backgroundColor = [NSColor colorWithCalibratedWhite:0.16 alpha:1];
-    CGFloat pad = 16, full = kCfgW-32-pad*2; FlippedView *form = [[FlippedView alloc] initWithFrame:NSMakeRect(0,0,kCfgW-32,360)];
+    self.configScrollView.backgroundColor = [self panelColor];
+    CGFloat pad = 16, full = kCfgW-32-pad*2, gap = 12, portW = 72, hostW = full - gap - portW;
+    FlippedView *form = [[FlippedView alloc] initWithFrame:NSMakeRect(0,0,kCfgW-32,420)];
     CGFloat y = pad;
-    self.hostField = [self addLabeledField:@"Host" inView:form y:y width:full x:pad secure:NO]; y += kFieldRowH;
+    self.nameField = [self addLabeledField:@"Name" inView:form y:y width:full x:pad secure:NO]; y += kFieldRowH;
+    self.hostField = [self addLabeledField:@"Host" inView:form y:y width:hostW x:pad secure:NO];
+    self.portField = [self addLabeledField:@"Port" inView:form y:y width:portW x:pad + hostW + gap secure:NO]; y += kFieldRowH;
     self.userField = [self addLabeledField:@"User" inView:form y:y width:full x:pad secure:NO]; y += kFieldRowH;
     self.passField = (NSSecureTextField *)[self addLabeledField:@"Password" inView:form y:y width:full x:pad secure:YES]; y += kFieldRowH;
-    self.portField = [self addLabeledField:@"SSH Port" inView:form y:y width:full x:pad secure:NO]; y += kFieldRowH;
     self.keyField = [self addLabeledField:@"SSH Key path (optional)" inView:form y:y width:full x:pad secure:NO]; y += kFieldRowH+12;
     form.frame = NSMakeRect(0,0,kCfgW-32,y); self.configScrollView.documentView = form; [c addSubview:self.configScrollView];
     self.configStatusLabel = [self makeLabel:@"" size:11 weight:NSFontWeightRegular color:NSColor.systemGreenColor];
@@ -225,16 +655,7 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     [self styleActionButton:self.saveButton color:[NSColor colorWithCalibratedRed:0.20 green:0.45 blue:0.95 alpha:1]]; [c addSubview:self.saveButton];
 }
 
-- (void)loadConfigIntoFields {
-    VPNConfig *cfg = [VPNConfig loadFromURL:[self configURL]];
-    self.hostField.stringValue = cfg.host ?: @""; self.userField.stringValue = cfg.user ?: @"";
-    self.passField.stringValue = cfg.password ?: @"";
-    self.portField.stringValue = cfg.port ?: @"";
-    self.keyField.stringValue = cfg.key ?: @"";
-    self.configStatusLabel.stringValue = @"";
-}
-- (void)openConfig {
-    [self loadConfigIntoFields];
+- (void)showConfigWindow {
     if (!self.configWindow.isVisible) {
         NSRect mf = self.window.frame, cf = self.configWindow.frame;
         cf.origin.x = NSMidX(mf)-cf.size.width/2; cf.origin.y = NSMidY(mf)-cf.size.height/2;
@@ -243,99 +664,138 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     [self.configWindow makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
 }
 
-- (void)saveConfig {
-    [self ensureSupportFiles];
-    VPNConfig *existing = [VPNConfig loadFromURL:[self configURL]];
-    VPNConfig *cfg = [VPNConfig new];
-    cfg.host = [self.hostField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    cfg.user = [self.userField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    cfg.password = self.passField.stringValue ?: @"";
-    if (cfg.password.length == 0 && existing.password.length > 0) {
-        cfg.password = existing.password;
+- (void)loadFieldsFromProfile:(VPNProfile *)p {
+    self.nameField.stringValue = p.name ?: @"";
+    self.hostField.stringValue = p.host ?: @"";
+    self.userField.stringValue = p.user ?: @"";
+    self.passField.stringValue = p.password ?: @"";
+    self.portField.stringValue = p.port ?: @"";
+    self.keyField.stringValue = p.key ?: @"";
+    self.configStatusLabel.stringValue = @"";
+}
+
+- (void)addConfigTapped {
+    if (self.isBusy) return;
+    if (![self.session allowsConfigChangeWhileConnected:self.isOn]) {
+        self.busyLabel.stringValue = @"Disconnect before changing config";
+        self.busyLabel.textColor = NSColor.systemOrangeColor;
+        return;
     }
-    cfg.port = [self.portField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    cfg.key = [self.keyField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    cfg.extraOpts = @"";
-    if (!cfg.host.length || !cfg.user.length) {
+    self.editingProfileId = nil;
+    self.configWindow.title = @"Add Config";
+    [self loadFieldsFromProfile:[VPNProfile new]];
+    self.portField.stringValue = @"22";
+    [self showConfigWindow];
+}
+
+- (void)editConfigTapped {
+    if (self.isBusy) return;
+    if (![self.session allowsConfigChangeWhileConnected:self.isOn]) {
+        self.busyLabel.stringValue = @"Disconnect before editing";
+        self.busyLabel.textColor = NSColor.systemOrangeColor;
+        return;
+    }
+    NSInteger row = self.profilesTable.selectedRow;
+    if (row < 0) row = [self indexOfActiveProfile];
+    if (row < 0 || row >= (NSInteger)self.profiles.count) {
+        self.busyLabel.stringValue = @"Select a config first";
+        self.busyLabel.textColor = NSColor.systemOrangeColor;
+        return;
+    }
+    VPNProfile *p = self.profiles[row];
+    self.editingProfileId = p.profileId;
+    self.configWindow.title = @"Edit Config";
+    [self loadFieldsFromProfile:p];
+    [self showConfigWindow];
+}
+
+- (void)deleteConfigTapped {
+    if (self.isBusy) return;
+    if (![self.session allowsConfigChangeWhileConnected:self.isOn]) {
+        self.busyLabel.stringValue = @"Disconnect before changing config";
+        self.busyLabel.textColor = NSColor.systemOrangeColor;
+        return;
+    }
+    NSInteger row = self.profilesTable.selectedRow;
+    if (row < 0) row = [self indexOfActiveProfile];
+    if (row < 0 || row >= (NSInteger)self.profiles.count) return;
+    VPNProfile *p = self.profiles[row];
+    NSAlert *alert = [NSAlert new];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"Delete this config?";
+    alert.informativeText = [NSString stringWithFormat:@"\"%@\" (%@) will be removed permanently.", p.displayTitle, p.subtitle];
+    [alert addButtonWithTitle:@"Delete"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+
+    BOOL wasActive = [p.profileId isEqualToString:self.activeProfileId];
+    [self.profiles removeObjectAtIndex:row];
+    if (wasActive) {
+        self.activeProfileId = self.profiles.firstObject.profileId;
+        [self invalidateTunnelSession];
+        if (self.isOn) {
+            [self.session userClearedIntent];
+            self.autoReconnectPending = NO;
+            [self runVPN:@"off" busyMessage:@"Disconnecting deleted config…"];
+        }
+    }
+    [self saveProfilesStore];
+    [self syncActiveToVpnConf];
+    [self reloadProfilesUI];
+    [self refreshStatus];
+}
+
+- (void)saveConfig {
+    if (![self.session allowsConfigChangeWhileConnected:self.isOn]) {
+        self.configStatusLabel.textColor = NSColor.systemOrangeColor;
+        self.configStatusLabel.stringValue = @"Disconnect before saving";
+        return;
+    }
+    [self ensureSupportFiles];
+    NSString *name = [self.nameField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *host = [self.hostField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *user = [self.userField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *password = self.passField.stringValue ?: @"";
+    NSString *port = [self.portField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *key = [self.keyField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if (!host.length || !user.length) {
         self.configStatusLabel.textColor = NSColor.systemRedColor;
         self.configStatusLabel.stringValue = @"Host and User are required";
         return;
     }
-    if (cfg.port.length > 0 && cfg.port.integerValue <= 0) {
+    if (port.length > 0 && port.integerValue <= 0) {
         self.configStatusLabel.textColor = NSColor.systemRedColor;
         self.configStatusLabel.stringValue = @"Port must be a number";
         return;
     }
-    [[NSFileManager defaultManager] createDirectoryAtURL:[self supportDir] withIntermediateDirectories:YES attributes:nil error:nil];
-    NSError *err = nil;
-    if (![cfg saveToURL:[self configURL] error:&err]) {
+    if (!name.length) name = host;
+
+    VPNProfile *existing = [self profileWithId:self.editingProfileId];
+    if (password.length == 0 && existing.password.length > 0) password = existing.password;
+
+    BOOL isNew = (existing == nil);
+    VPNProfile *cfg = existing ?: [VPNProfile profileWithName:name host:host user:user password:password port:port key:key];
+    cfg.name = name; cfg.host = host; cfg.user = user; cfg.password = password; cfg.port = port; cfg.key = key;
+    if (isNew) [self.profiles addObject:cfg];
+
+    self.activeProfileId = cfg.profileId;
+    if (![self saveProfilesStore] || ![self syncActiveToVpnConf]) {
         self.configStatusLabel.textColor = NSColor.systemRedColor;
         self.configStatusLabel.stringValue = @"Save failed";
         return;
     }
 
     [self invalidateTunnelSession];
-    self.passField.stringValue = cfg.password ?: @"";
-    self.detailLabel.stringValue = [NSString stringWithFormat:@"%@@%@:%@", cfg.user, cfg.host, cfg.port];
+    self.passField.stringValue = password;
     self.configStatusLabel.textColor = NSColor.systemGreenColor;
-    self.configStatusLabel.stringValue = @"Config saved — using new settings";
+    self.configStatusLabel.stringValue = isNew ? @"Config added" : @"Config saved";
+    [self reloadProfilesUI];
 
-    BOOL reconnect = self.isOn;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self.configWindow orderOut:nil];
         [self.window makeKeyAndOrderFront:nil];
-        if (reconnect) {
-            [self applyNewConfigReconnect];
-        } else {
-            [self refreshStatus];
-        }
-    });
-}
-
-- (void)applyNewConfigReconnect {
-    if (self.isBusy) return;
-    self.cancelRequested = NO;
-    [self setBusy:YES message:@"Applying new config…"];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        [self invalidateTunnelSession];
-        [self runScriptEx:@[@"off"]];
-        if (self.cancelRequested) return;
-        if (![self ensureAuthBeforeConnectBlocking]) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (self.cancelRequested) return;
-                [self clearBusyUI];
-                self.busyLabel.stringValue = @"Config saved — permission needed to connect";
-                self.busyLabel.textColor = NSColor.systemOrangeColor;
-                [self refreshStatus];
-            });
-            return;
-        }
-        NSDictionary *result = [self runScriptEx:@[@"on"]];
-        if (self.cancelRequested) return;
-        NSString *output = result[@"output"] ?: @"";
-        NSInteger code = [result[@"code"] integerValue];
-        BOOL needAuth = [output containsString:@"STATE=NEED_AUTH"] || code == 78;
-        NSDictionary *st = [self runScriptEx:@[@"status"]];
-        NSString *stOut = st[@"output"] ?: @"";
-        BOOL on = [self parseStateOn:stOut];
-        NSString *detail = [self parseTarget:stOut];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.cancelRequested) return;
-            [self clearBusyUI];
-            [self applyUIOn:on detail:detail];
-            [self refreshPublicIP];
-            if (needAuth) {
-                self.hasAuth = NO; [self updateAuthLabel];
-                self.busyLabel.stringValue = @"Config saved — click Connect to Allow";
-                self.busyLabel.textColor = NSColor.systemOrangeColor;
-            } else if (!on) {
-                self.busyLabel.stringValue = @"Config saved — connection failed";
-                self.busyLabel.textColor = NSColor.systemRedColor;
-            } else {
-                self.busyLabel.stringValue = @"Connected with new config";
-                self.busyLabel.textColor = NSColor.systemGreenColor;
-            }
-        });
+        [self refreshStatus];
     });
 }
 
@@ -380,7 +840,8 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
         NSString *t = [self stripAnsi:line];
         if ([t hasPrefix:@"Target: "]) return [t substringFromIndex:8];
     }
-    return @"—";
+    VPNProfile *p = [self activeProfile];
+    return p ? [NSString stringWithFormat:@"%@ — %@", p.displayTitle, p.subtitle] : @"—";
 }
 
 - (void)updateAuthLabel {
@@ -427,6 +888,8 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
 - (void)cancelTapped {
     if (!self.isBusy) return;
     self.cancelRequested = YES;
+    [self.session userClearedIntent];
+    self.autoReconnectPending = NO;
     self.busyLabel.stringValue = @"Cancelling…";
     NSTask *task = self.activeTask;
     if (task.running) [task terminate];
@@ -450,6 +913,8 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     [alert addButtonWithTitle:@"Reset"];
     [alert addButtonWithTitle:@"Cancel"];
     if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    [self.session userClearedIntent];
+    self.autoReconnectPending = NO;
     if (self.isOn) [self runScriptEx:@[@"off"]];
     NSString *scriptPath = [self scriptURL].path;
     NSString *escaped = [[scriptPath stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"] stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
@@ -465,13 +930,59 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
 
 - (void)toggleTapped {
     if (self.isBusy) return;
-    if (self.isOn) { [self runVPN:@"off"]; return; }
+    if (self.isOn) {
+        [self.session userClearedIntent];
+        self.autoReconnectPending = NO;
+        [self runVPN:@"off" busyMessage:nil];
+        return;
+    }
+    if (![self activeProfile]) {
+        self.busyLabel.stringValue = @"Add a config first";
+        self.busyLabel.textColor = NSColor.systemOrangeColor;
+        return;
+    }
+    [self syncActiveToVpnConf];
     if (![self ensureAuthBeforeConnect]) {
         self.busyLabel.stringValue = @"Permission cancelled";
         self.busyLabel.textColor = NSColor.systemOrangeColor;
         return;
     }
-    [self runVPN:@"on"];
+    [self.session userTappedConnect];
+    self.autoReconnectPending = NO;
+    [self runVPN:@"on" busyMessage:nil];
+}
+
+- (void)scheduleAutoReconnect {
+    if (self.autoReconnectPending) return;
+    if (![self.session shouldAutoReconnectWhileTunnelUp:NO isBusy:self.isBusy]) {
+        if (self.session.userWantsConnect && self.session.didConnectSuccessfully &&
+            self.session.reconnectAttempts >= self.session.maxReconnectAttempts) {
+            [self.session userClearedIntent];
+            self.busyLabel.stringValue = @"Couldn't stay connected — click Connect";
+            self.busyLabel.textColor = NSColor.systemOrangeColor;
+        }
+        return;
+    }
+    [self.session noteReconnectScheduled];
+    self.autoReconnectPending = YES;
+    NSInteger attempt = self.session.reconnectAttempts;
+    NSInteger maxA = self.session.maxReconnectAttempts;
+    NSTimeInterval delay = MIN(0.35 * pow(1.55, (double)(attempt - 1)), 6.0);
+    self.busyLabel.stringValue = [NSString stringWithFormat:@"Connection dropped — reconnecting… (%ld/%ld)", (long)attempt, (long)maxA];
+    self.busyLabel.textColor = NSColor.systemOrangeColor;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.autoReconnectPending = NO;
+        // Attempt was already counted; run it unless user cancelled / busy.
+        if (!self.session.userWantsConnect || !self.session.didConnectSuccessfully || self.isBusy) return;
+        [self syncActiveToVpnConf];
+        if (![self ensureAuthBeforeConnect]) {
+            [self.session userClearedIntent];
+            self.busyLabel.stringValue = @"Reconnect needs permission — click Connect";
+            self.busyLabel.textColor = NSColor.systemOrangeColor;
+            return;
+        }
+        [self runVPN:@"on" busyMessage:[NSString stringWithFormat:@"Reconnecting… (%ld/%ld)", (long)attempt, (long)maxA]];
+    });
 }
 
 - (void)clearBusyUI {
@@ -480,21 +991,22 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     self.cancelRequested = NO;
     self.activeTask = nil;
     self.actionButton.enabled = YES;
-    self.configButton.enabled = YES;
     self.saveButton.enabled = YES;
     self.resetPermButton.enabled = YES;
     self.cancelButton.hidden = YES;
     self.resetPermButton.hidden = NO;
+    [self updateProfileButtons];
 }
 
 - (void)setBusy:(BOOL)busy message:(NSString *)message {
     self.isBusy = busy;
     self.actionButton.enabled = !busy;
-    self.configButton.enabled = !busy;
     self.saveButton.enabled = !busy;
     self.resetPermButton.enabled = !busy;
+    self.profilesTable.enabled = !busy;
     self.cancelButton.hidden = !busy;
     self.resetPermButton.hidden = busy;
+    [self updateProfileButtons];
     self.busyLabel.stringValue = message ?: @"";
     if (busy) {
         self.actionButton.title = @"Please wait…";
@@ -516,22 +1028,28 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
         if (!self.isBusy) { self.actionButton.title = @"Disconnect"; [self styleActionButton:self.actionButton color:NSColor.systemRedColor]; }
     } else {
         self.statusDot.layer.backgroundColor = NSColor.systemRedColor.CGColor;
-        self.statusLabel.stringValue = @"Disconnected"; self.statusLabel.textColor = [NSColor.whiteColor colorWithAlphaComponent:0.85];
+        self.statusLabel.stringValue = @"Disconnected"; self.statusLabel.textColor = [self secondaryTextColor:0.85];
         if (!self.isBusy) { self.actionButton.title = @"Connect"; [self styleActionButton:self.actionButton color:NSColor.systemGreenColor]; }
     }
-    self.detailLabel.stringValue = detail ?: @"—";
+    [self layoutCenteredStatus];
+    [self updateProfileButtons];
+    (void)detail;
 }
 
 - (void)refreshAuthAndStatus {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
+        [self syncActiveToVpnConf];
         NSDictionary *auth = [self runScriptEx:@[@"auth-status"]];
         NSDictionary *st = [self runScriptEx:@[@"status"]];
         NSString *out = st[@"output"] ?: @"";
         BOOL ok = [self parseAuthOK:auth[@"output"] ?: @""] || [self parseAuthOK:out];
+        BOOL on = [self parseStateOn:out];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.hasAuth = ok;
             [self updateAuthLabel];
-            [self applyUIOn:[self parseStateOn:out] detail:[self parseTarget:out]];
+            // Do NOT arm auto-reconnect from leftover tunnels — only UI state.
+            [self applyUIOn:on detail:[self parseTarget:out]];
+            [self reloadProfilesUI];
         });
     });
 }
@@ -541,20 +1059,31 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
         NSDictionary *r = [self runScriptEx:@[@"status"]];
         NSString *out = r[@"output"] ?: @"";
+        BOOL on = [self parseStateOn:out];
+        NSString *detail = [self parseTarget:out];
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.isBusy) return;
             if ([out containsString:@"AUTH="] || [out containsString:@"STATE=AUTH"]) {
                 self.hasAuth = [self parseAuthOK:out];
                 [self updateAuthLabel];
             }
-            [self applyUIOn:[self parseStateOn:out] detail:[self parseTarget:out]];
+            BOOL shouldRetry = [self.session shouldAutoReconnectWhileTunnelUp:on isBusy:NO];
+            if (on && self.session.didConnectSuccessfully) {
+                // Stable again after a drop — reset attempt counter only if we already owned the session.
+                [self.session connectSucceeded];
+            }
+            [self applyUIOn:on detail:detail];
+            if (shouldRetry) [self scheduleAutoReconnect];
         });
     });
 }
 
-- (void)runVPN:(NSString *)command {
+- (void)runVPN:(NSString *)command busyMessage:(NSString *)busyMessage {
     BOOL connecting = [command isEqualToString:@"on"];
     self.cancelRequested = NO;
-    [self setBusy:YES message:connecting ? @"Connecting…" : @"Disconnecting…"];
+    NSString *msg = busyMessage.length ? busyMessage : (connecting ? @"Connecting…" : @"Disconnecting…");
+    [self syncActiveToVpnConf];
+    [self setBusy:YES message:msg];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
         NSDictionary *result = [self runScriptEx:@[command]];
         if (self.cancelRequested) return;
@@ -570,16 +1099,33 @@ static const CGFloat kMainW = 360, kMainH = 350, kCfgW = 440, kCfgH = 520, kCfgB
             [self clearBusyUI];
             [self applyUIOn:on detail:detail];
             [self refreshPublicIP];
+            [self reloadProfilesUI];
             if (needAuth) {
                 self.hasAuth = NO; [self updateAuthLabel];
+                if (connecting) [self.session connectAttemptFailed];
                 self.busyLabel.stringValue = @"Need one-time setup — click Connect again";
                 self.busyLabel.textColor = NSColor.systemOrangeColor;
             } else if (failed) {
-                self.busyLabel.stringValue = connecting ? @"Connection failed — check config" : @"Disconnect incomplete";
-                self.busyLabel.textColor = NSColor.systemRedColor;
+                if (connecting) {
+                    BOOL mayRetry = self.session.didConnectSuccessfully && self.session.userWantsConnect;
+                    [self.session connectAttemptFailed];
+                    if (mayRetry && [self.session shouldAutoReconnectWhileTunnelUp:NO isBusy:NO]) {
+                        self.busyLabel.stringValue = @"Reconnect failed — retrying…";
+                        self.busyLabel.textColor = NSColor.systemOrangeColor;
+                        [self scheduleAutoReconnect];
+                    } else {
+                        self.busyLabel.stringValue = @"Connection failed — check config";
+                        self.busyLabel.textColor = NSColor.systemRedColor;
+                    }
+                } else {
+                    self.busyLabel.stringValue = @"Disconnect incomplete";
+                    self.busyLabel.textColor = NSColor.systemRedColor;
+                }
             } else {
+                if (connecting && on) [self.session connectSucceeded];
+                if (!connecting && !on) [self.session userClearedIntent];
                 self.busyLabel.stringValue = @"";
-                self.busyLabel.textColor = [NSColor.whiteColor colorWithAlphaComponent:0.45];
+                self.busyLabel.textColor = [self secondaryTextColor:0.45];
             }
         });
     });
